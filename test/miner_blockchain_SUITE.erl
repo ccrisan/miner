@@ -15,7 +15,18 @@
 
         ]).
 
--compile([export_all]).
+-export([
+    restart_test/1,
+    dkg_restart_test/1,
+    election_test/1,
+    election_multi_test/1,
+    group_change_test/1,
+    master_key_test/1,
+    version_change_test/1,
+    election_v3_test/1,
+    high_snapshot_test/1,
+    autoskip_test/1
+]).
 
 %% common test callbacks
 
@@ -110,9 +121,10 @@ init_per_testcase(TestCase, Config0) ->
     Txns = InitialVars ++ InitialPayment ++ InitGen,
 
     DKGResults = miner_ct_utils:initial_dkg(Miners, Txns, Addresses, NumConsensusMembers, Curve),
+    ct:pal("DKGResults: ~p", [DKGResults]),
     true = lists:all(fun(Res) -> Res == ok end, DKGResults),
 
-    timer:sleep(500),
+    timer:sleep(2000),
     %% Get both consensus and non consensus miners
     true = miner_ct_utils:wait_until(
              fun() ->
@@ -141,7 +153,63 @@ init_per_testcase(TestCase, Config0) ->
 end_per_testcase(_TestCase, Config) ->
     miner_ct_utils:end_per_testcase(_TestCase, Config).
 
+autoskip_test(Config) ->
+    BaseDir = ?config(base_dir, Config),
+    Miners = ?config(miners, Config),
+    {SecretKey, _PubKey} = ?config(master_key, Config),
 
+    N = length(Miners),
+    NMocked = (N div 2) + 2, % Less than that ends-up rejecting the bogus var.
+    MinersMocked = lists:sublist(Miners, NMocked),
+
+    BogusKey = bogus_key,
+    BogusVal = bogus_val,
+
+    ct:pal("BaseDir: ~p", [BaseDir]),
+    ct:pal("N: ~p", [N]),
+    ct:pal("NMocked: ~p", [NMocked]),
+    ct:pal("MinersMocked: ~p", [MinersMocked]),
+
+    ?assertMatch(
+        [_],
+        lists:usort([H || {_, H} <- miner_ct_utils:heights(Miners)]),
+        "Starting heights are equal."
+    ),
+
+    %% Mocked will allow bogus vars:
+    [
+        ok = ct_rpc:call(M, meck, expect, [blockchain_txn_vars_v1, is_valid, fun(_, _) -> ok end], 300)
+    ||
+        M <- MinersMocked
+    ],
+
+    %% Submit bogus var transaction:
+    (fun() ->
+        Txn0 = blockchain_txn_vars_v1:new(#{BogusKey => BogusVal}, 2),
+        Proof = blockchain_txn_vars_v1:create_proof(SecretKey, Txn0),
+        Txn = blockchain_txn_vars_v1:proof(Txn0, Proof),
+        miner_ct_utils:submit_txn(Txn, Miners)
+    end)(),
+
+    ?assertMatch(
+        ok,
+        miner_ct_utils:wait_for_chain_var_update(MinersMocked, BogusKey, BogusVal, 100),
+        "Mocked miners accepted bogus chain var."
+    ),
+    ?assertMatch(
+        [{error, not_found}],
+        lists:usort(miner_ct_utils:miners_chain_var(Miners -- MinersMocked, BogusKey)),
+        "Un-mocked miners rejected the bogus chain var."
+    ),
+
+    [HeightMocked] =
+        lists:usort([H || {_, H} <- miner_ct_utils:heights(MinersMocked)]),
+    [HeightUnMocked] =
+        lists:usort([H || {_, H} <- miner_ct_utils:heights(Miners -- MinersMocked)]),
+
+    ?assert(HeightMocked > HeightUnMocked, "Unmocked miners stalled."),
+
+    {comment, miner_ct_utils:heights(Miners)}.
 
 restart_test(Config) ->
     BaseDir = ?config(base_dir, Config),

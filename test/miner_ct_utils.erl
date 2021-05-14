@@ -66,7 +66,10 @@
          get_txn_block_details/2, get_txn_block_details/3,
          get_txn/2, get_txns/2,
          get_genesis_block/2,
-         load_genesis_block/3
+         load_genesis_block/3,
+
+         miners_chain_var/2,
+         miner_chain_var/2
         ]).
 
 
@@ -348,7 +351,7 @@ wait_for_chain_var_update(Miners, Key, Value, Retries)->
                              C = ct_rpc:call(Miner, blockchain_worker, blockchain, [], 500),
                              Ledger = ct_rpc:call(Miner, blockchain, ledger, [C]),
                              R = ct_rpc:call(Miner, blockchain, config, [Key, Ledger], 500),
-                             ct:pal("var = ~p", [R]),
+                             ct:pal("var: ~p, miner: ~p.", [R, Miner]),
                              {ok, Value} == R
                      end, miner_ct_utils:shuffle(Miners))
            end,
@@ -357,6 +360,16 @@ wait_for_chain_var_update(Miners, Key, Value, Retries)->
         true -> ok;
         Else -> Else
     end.
+
+miners_chain_var(Miners, Key) ->
+    [miner_chain_var(M, Key) || M <- Miners].
+
+miner_chain_var(Miner, Key) ->
+    Chain = ct_rpc:call(Miner, blockchain_worker, blockchain, [], 500),
+    Ledger = ct_rpc:call(Miner, blockchain, ledger, [Chain]),
+    Result = ct_rpc:call(Miner, blockchain, config, [Key, Ledger], 500),
+    ct:pal("miner: ~p, chain var: ~p -> ~p.", [Miner, Key, Result]),
+    Result.
 
 delete_dirs(DirWildcard, SubDir)->
     Dirs = filelib:wildcard(DirWildcard),
@@ -1158,7 +1171,9 @@ handle_get_consensus_miners(Miner)->
 handle_miners_by_consensus(Mod, Bool, Miners)->
     lists:Mod(
             fun(Miner) ->
-                Bool == ct_rpc:call(Miner, miner_consensus_mgr, in_consensus, [])
+                Out = ct_rpc:call(Miner, miner_consensus_mgr, in_consensus, []),
+                ct:pal("in_consensus : ~p -> ~p", [Miner, Out]),
+                Out == Bool
             end, Miners).
 
 handle_gte_type(height, Miner, Threshold)->
